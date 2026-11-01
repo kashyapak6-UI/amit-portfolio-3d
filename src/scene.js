@@ -27,21 +27,24 @@ varying vec3 vN; varying vec3 vView; varying float vD;
 ${NOISE}
 float disp(vec3 p){
   float n = snoise(p*uFreq + vec3(0., uTime*.25, uTime*.15));
+#ifndef LITE
   n += .35*snoise(p*uFreq*2.3 - uTime*.2);
+#endif
   float m = smoothstep(1.6, 0., distance(normalize(p)*1.3, uMouse)); // bulge toward cursor
   return n*uAmp + m*.35;
 }
 vec3 orth(vec3 v){return abs(v.x)>abs(v.z)?vec3(-v.y,v.x,0.):vec3(0.,-v.z,v.y);}
 void main(){
   vec3 n = normalize(normal);
-  vec3 p = position + n*disp(position);
+  float d0 = disp(position);
+  vec3 p = position + n*d0;
   vec3 t = normalize(orth(n)); vec3 b = normalize(cross(n,t));
   float e = .01;
   vec3 pt = position + t*e; pt += normalize(pt)*disp(pt);
   vec3 pb = position + b*e; pb += normalize(pb)*disp(pb);
   vec3 nn = normalize(cross(pt-p, pb-p));
   if(dot(nn,n)<0.) nn = -nn;
-  vD = disp(position);
+  vD = d0;
   vec4 mv = modelViewMatrix*vec4(p,1.);
   vN = normalize(normalMatrix*nn); vView = normalize(-mv.xyz);
   gl_Position = projectionMatrix*mv;
@@ -69,7 +72,11 @@ varying float vA;
 ${NOISE}
 void main(){
   vec3 p = position;
+#ifdef LITE
+  p += .25*vec3(sin(p.y*.9+uTime*.4), sin(p.z*.9+uTime*.35+2.), sin(p.x*.9+4.));
+#else
   p += .25*vec3(snoise(p*.3+uTime*.05), snoise(p*.3+7.+uTime*.05), snoise(p*.3+13.));
+#endif
   vec4 mv = modelViewMatrix*vec4(p,1.);
   vec4 wp = modelMatrix*vec4(p,1.);
   float d = distance(wp.xy, uMouse.xy);
@@ -96,10 +103,12 @@ void main(){
   gl_FragColor = vec4(c*uDim, edge*smoothstep(0.,.3,uDim));
 }`;
 
-export function createScene(canvas, { images, reduced, mobile, onReady }) {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: !mobile, powerPreference: "high-performance" });
-  const dpr = Math.min(window.devicePixelRatio || 1, mobile ? 1.25 : 1.5);
+export function createScene(canvas, { images, reduced, mobile, onReady, onFail }) {
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: !mobile, powerPreference: mobile ? "default" : "high-performance", stencil: false });
+  let dpr = Math.min(window.devicePixelRatio || 1, 1.5);
   renderer.setPixelRatio(dpr);
+  const defines = mobile ? { LITE: "" } : {};
+  canvas.addEventListener("webglcontextlost", (e) => { e.preventDefault(); stop(); onFail && onFail(); });
   renderer.setClearColor(0x07070a, 1);
 
   const scene = new THREE.Scene();
@@ -117,13 +126,13 @@ export function createScene(canvas, { images, reduced, mobile, onReady }) {
     uA: { value: ACC }, uB: { value: VIO }, uDim: { value: 1 },
   };
   const blob = new THREE.Mesh(
-    new THREE.IcosahedronGeometry(1.25, mobile ? 40 : 72),
-    new THREE.ShaderMaterial({ uniforms: blobU, vertexShader: blobVert, fragmentShader: blobFrag })
+    new THREE.IcosahedronGeometry(1.25, mobile ? 24 : 72),
+    new THREE.ShaderMaterial({ uniforms: blobU, defines, vertexShader: blobVert, fragmentShader: blobFrag })
   );
   world.add(blob);
 
   // --- particles
-  const N = mobile ? 900 : 2200;
+  const N = mobile ? 550 : 2200;
   const pos = new Float32Array(N * 3), ar = new Float32Array(N);
   for (let i = 0; i < N; i++) {
     const r = 2.6 + Math.random() * 6.5, th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1);
@@ -136,7 +145,7 @@ export function createScene(canvas, { images, reduced, mobile, onReady }) {
   pg.setAttribute("position", new THREE.BufferAttribute(pos, 3));
   pg.setAttribute("aR", new THREE.BufferAttribute(ar, 1));
   const ptsU = { uTime: blobU.uTime, uSize: { value: 26 * dpr }, uMouse: { value: new THREE.Vector3(99, 99, 0) }, uColor: { value: new THREE.Color("#e9e6df") }, uDim: { value: 1 } };
-  const points = new THREE.Points(pg, new THREE.ShaderMaterial({ uniforms: ptsU, vertexShader: ptsVert, fragmentShader: ptsFrag, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+  const points = new THREE.Points(pg, new THREE.ShaderMaterial({ uniforms: ptsU, defines, vertexShader: ptsVert, fragmentShader: ptsFrag, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
   world.add(points);
 
   // --- orbit of work cards
@@ -145,9 +154,9 @@ export function createScene(canvas, { images, reduced, mobile, onReady }) {
   world.add(ring);
   const loader = new THREE.TextureLoader();
   const cards = [];
-  const list = mobile ? images.slice(0, 6) : images;
+  const list = mobile ? images.slice(0, 5) : images;
   const R = mobile ? 2.5 : 3.1;
-  const cardGeo = new THREE.PlaneGeometry(1, 1.25, 16, 1);
+  const cardGeo = new THREE.PlaneGeometry(1, 1.25, mobile ? 8 : 16, 1);
   let loaded = 0;
   list.forEach((src, i) => {
     const u = { uTex: { value: null }, uHover: { value: 0 }, uDim: { value: 1 }, uBend: { value: 0.12 }, uRatio: { value: new THREE.Vector2(1, 1) } };
@@ -157,7 +166,7 @@ export function createScene(canvas, { images, reduced, mobile, onReady }) {
     m.lookAt(0, m.position.y, 0); m.rotateY(Math.PI);
     m.userData = { u, hover: 0 };
     loader.load(src, (t) => {
-      t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+      t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = mobile ? 1 : 4;
       const ir = t.image.width / t.image.height, pr = 1 / 1.25;
       u.uRatio.value.set(ir > pr ? pr / ir : 1, ir > pr ? 1 : ir / pr);
       u.uTex.value = t;
@@ -186,7 +195,8 @@ export function createScene(canvas, { images, reduced, mobile, onReady }) {
   window.addEventListener("resize", resize);
 
   const clock = new THREE.Clock();
-  let running = true, raf = 0, velocity = 0;
+  let running = true, wanted = true, raf = 0, velocity = 0;
+  let fpsN = 0, fpsT = 0, tuned = !mobile; // phones: drop resolution once if the GPU can't keep up
   const tmp = new THREE.Vector3();
 
   function frame() {
@@ -216,11 +226,13 @@ export function createScene(canvas, { images, reduced, mobile, onReady }) {
     ring.scale.setScalar(state.ringScale);
     points.rotation.y = t * 0.015;
 
-    // hover cards
-    ray.setFromCamera(mouse, camera);
-    const hit = ray.intersectObjects(cards, false)[0];
-    hovered = hit ? hit.object : null;
-    canvas.style.cursor = hovered ? "pointer" : "";
+    // hover cards (fine pointers only)
+    if (!mobile) {
+      ray.setFromCamera(mouse, camera);
+      const hit = ray.intersectObjects(cards, false)[0];
+      hovered = hit ? hit.object : null;
+      canvas.style.cursor = hovered ? "pointer" : "";
+    }
     for (const c of cards) {
       c.userData.hover += ((c === hovered ? 1 : 0) - c.userData.hover) * 0.12;
       c.userData.u.uHover.value = c.userData.hover;
@@ -233,12 +245,18 @@ export function createScene(canvas, { images, reduced, mobile, onReady }) {
 
     renderer.render(scene, camera);
     velocity *= 0.9;
+    if (!tuned && t > 1.5) {
+      fpsN++; fpsT += dt;
+      if (fpsN >= 90) { tuned = true; if (fpsN / fpsT < 45 && dpr > 1) { dpr = 1; renderer.setPixelRatio(1); resize(); ptsU.uSize.value = 26; } }
+    }
     if (running) raf = requestAnimationFrame(frame);
   }
 
-  const start = () => { if (!running) { running = true; clock.getDelta(); raf = requestAnimationFrame(frame); } };
-  const stop = () => { running = false; cancelAnimationFrame(raf); };
-  document.addEventListener("visibilitychange", () => (document.hidden ? stop() : start()));
+  const run = () => { if (!running && wanted && !document.hidden) { running = true; clock.getDelta(); raf = requestAnimationFrame(frame); } };
+  const halt = () => { running = false; cancelAnimationFrame(raf); };
+  function start() { wanted = true; run(); }
+  function stop() { wanted = false; halt(); }
+  document.addEventListener("visibilitychange", () => (document.hidden ? halt() : run()));
   raf = requestAnimationFrame(frame);
 
   return { state, setVelocity: (v) => (velocity = v), start, stop, renderOnce: frame };
